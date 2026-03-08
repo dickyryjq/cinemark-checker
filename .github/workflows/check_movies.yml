@@ -1,0 +1,69 @@
+name: Check Cinemark Chinese Subtitle Movies
+
+on:
+  schedule:
+    # 11 PM Pacific Time = 07:00 UTC (PST, UTC-8)
+    # Adjust to 06:00 UTC in summer for PDT (UTC-7)
+    - cron: "0 7 * * *"
+  workflow_dispatch: # allow manual runs
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Run checker
+        id: checker
+        run: |
+          output=$(python checker.py)
+          echo "$output"
+          if echo "$output" | grep -q "NEW_MOVIES_FOUND"; then
+            # Extract movie list (lines starting with "  - ")
+            movies=$(echo "$output" | grep "^  - " | sed 's/^  - //')
+            # Escape for GitHub Actions multiline output
+            EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+            echo "movie_list<<$EOF" >> "$GITHUB_OUTPUT"
+            echo "$movies" >> "$GITHUB_OUTPUT"
+            echo "$EOF" >> "$GITHUB_OUTPUT"
+            echo "new_found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "new_found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open GitHub Issue for new movies
+        if: steps.checker.outputs.new_found == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const movieList = `${{ steps.checker.outputs.movie_list }}`;
+            const lines = movieList.trim().split('\n').map(l => `- ${l.trim()}`).join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🎬 New Chinese subtitle movie(s) at Cinemark Totem Lake`,
+              body: `The following new movie(s) with Chinese subtitles are now showing:\n\n${lines}\n\n[View showtimes](https://www.cinemark.com/theatres/wa-kirkland/cinemark-totem-lake-kirkland-and-xd)`,
+              labels: [],
+            });
+
+      - name: Commit updated seen_movies.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add seen_movies.json
+          git diff --staged --quiet || git commit -m "chore: update seen movies [skip ci]"
+          git push
